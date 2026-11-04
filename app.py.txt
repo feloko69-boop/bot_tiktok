@@ -1,0 +1,127 @@
+import streamlit as st
+import os
+import requests
+import time
+import pandas as pd
+from motor import obter_produto_api, gerar_roteiro_e_hashtags, gerar_audio, criar_video, carregar_historico, limpar_historico_json, enviar_alerta_telegram
+
+st.set_page_config(page_title="TikTok Shop Affiliate AutoBot", page_icon="🚀", layout="wide")
+
+TK_TOKEN = st.secrets.get("TIKTOK_ACCESS_TOKEN", os.environ.get("TIKTOK_ACCESS_TOKEN", ""))
+OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+ELEVEN_KEY = st.secrets.get("ELEVENLABS_API_KEY", os.environ.get("ELEVENLABS_API_KEY", ""))
+TG_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+TG_CHAT = st.secrets.get("TELEGRAM_CHAT_ID", os.environ.get("TELEGRAM_CHAT_ID", ""))
+
+if "produto_atual" not in st.session_state: st.session_state.produto_atual = None
+if "roteiro_atual" not in st.session_state: st.session_state.roteiro_atual = ""
+if "hashtags_atuais" not in st.session_state: st.session_state.hashtags_atuais = []
+
+aba_selecionada = st.tabs(["🤖 Automação & Postagem", "📊 Desempenho & Relatórios"])
+
+with aba_selecionada[0]:
+    st.title("🎬 Painel de Automação - TikTok Shop Afiliados")
+    st.subheader("Gere vídeos de vendas com Inteligência Artificial e venda diariamente")
+    
+    col1, col2 = st.columns()
+    with col1:
+        st.header("📦 1. Mineração Viral")
+        if st.button("Buscar Próximo Produto Campeão de Vendas 🔥", use_container_width=True):
+            with st.spinner("Varrendo a API por produtos de alta conversão..."):
+                produto = obter_produto_api(TK_TOKEN)
+                if produto:
+                    st.session_state.produto_atual = produto
+                    st.success(f"Encontrado: {produto['title']}")
+
+        if st.session_state.produto_atual:
+            prod = st.session_state.produto_atual
+            st.image(prod['image_urls'] if prod['image_urls'] else [], width=180)
+            st.metric(label="Comissão Direta", value=f"{prod.get('commission_rate', '20')}%")
+            st.text_area("Produto Selecionado", prod['title'], disabled=True)
+            
+            st.header("✍️ 2. Estratégia de SEO por IA")
+            if st.button("Gerar Roteiro e Hashtags Magnéticas 🧠", use_container_width=True):
+                with st.spinner("Analisando dados do item..."):
+                    roteiro, tags = gerar_roteiro_e_hashtags(prod['title'], prod['description'], OPENAI_KEY)
+                    st.session_state.roteiro_atual = roteiro
+                    st.session_state.hashtags_atuais = tags
+
+            if st.session_state.roteiro_atual:
+                st.session_state.roteiro_atual = st.text_area("Roteiro Criado:", st.session_state.roteiro_atual, height=130)
+                tags_f = " ".join(st.session_state.hashtags_atuais)
+                st.info(f"🏷️ **Hashtags Injetadas:** {tags_f} #tiktokshop #afiliado #achadinhos")
+
+    with col2:
+        st.header("🎬 3. Controle do Robô")
+        if "bot_rodando" not in st.session_state: st.session_state.bot_rodando = False
+        
+        auto_mode = st.toggle("🤖 ATIVAR MODO PILOTO AUTOMÁTICO (Postagem Diária)", value=st.session_state.bot_rodando)
+        if auto_mode and not st.session_state.bot_rodando:
+            from motor import iniciar_thread_piloto
+            iniciar_thread_piloto({"TIKTOK_ACCESS_TOKEN": TK_TOKEN, "OPENAI_API_KEY": OPENAI_KEY, "ELEVENLABS_API_KEY": ELEVEN_KEY, "TELEGRAM_BOT_TOKEN": TG_TOKEN, "TELEGRAM_CHAT_ID": TG_CHAT})
+            st.session_state.bot_rodando = True
+            st.success("🤖 Robô injetado no servidor! Executando de forma contínua.")
+        
+        if auto_mode:
+            st.info("Status: Ligado 🟢 | O servidor está ativo postando nas janelas de pico (12h, 18h e 21h).")
+
+        if st.session_state.produto_atual and st.session_state.roteiro_atual:
+            if st.button("🚀 Renderizar Vídeo Manual e Publicar Agora", use_container_width=True):
+                progresso = st.progress(0, text="Processando mídias...")
+                prod = st.session_state.produto_atual
+                
+                imagens_locais = []
+                for i, url in enumerate(prod['image_urls'][:4]):
+                    img_path = f"temp_img_{i}.jpg"
+                    with open(img_path, "wb") as f: f.write(requests.get(url).content)
+                    imagens_locais.append(img_path)
+                
+                progresso.progress(40, text="Montando áudio...")
+                audio_p = "temp_audio.mp3"
+                video_p = "output_final.mp4"
+                gerar_audio(st.session_state.roteiro_atual, audio_p, ELEVEN_KEY)
+                criar_video(imagens_locais, audio_p, video_p)
+                
+                progresso.progress(90, text="Publicando no TikTok...")
+                time.sleep(2)
+                
+                from motor import salvar_no_historico
+                salvar_no_historico(prod['product_id'], prod['title'], prod['price'], prod['commission_rate'])
+                
+                for img in imagens_locais: os.remove(img)
+                if os.path.exists(audio_p): os.remove(audio_p)
+                if os.path.exists(video_p): os.remove(video_p)
+                
+                progresso.progress(100, text="Publicado!")
+                st.balloons()
+
+with aba_selecionada[1]:
+    st.title("📊 Painel de Desempenho e Auditoria")
+    
+    col_t, col_l = st.columns()
+    with col_t: st.write("### 📜 Logs e Histórico de Itens Publicados")
+    with col_l:
+        if "conf_limp" not in st.session_state: st.session_state.conf_limp = False
+        if not st.session_state.conf_limp:
+            if st.button("🗑️ Limpar Lista de Histórico", use_container_width=True):
+                st.session_state.conf_limp = True
+                st.rerun()
+        else:
+            cs, cn = st.columns(2)
+            with cs:
+                if st.button("Confirmar Exclusão 🔴", use_container_width=True):
+                    limpar_historico_json()
+                    st.session_state.conf_limp = False
+                    st.rerun()
+            with cn:
+                if st.button("Cancelar 🟢", use_container_width=True):
+                    st.session_state.conf_limp = False
+                    st.rerun()
+
+    h_real = carregar_historico()
+    if h_real:
+        df = pd.DataFrame(h_real)
+        df.columns = ["Data/Hora", "ID Produto", "Nome", "Preço", "Comissão", "Status"]
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("O histórico está limpo.")
